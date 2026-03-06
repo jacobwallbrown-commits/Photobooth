@@ -1,0 +1,1070 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="PhotoBooth">
+<meta name="theme-color" content="#0a1628">
+<title>PhotoBooth — Trial Photos</title>
+
+<!-- PWA Manifest (inline via data URI) -->
+<link rel="manifest" href="data:application/json;base64,ewogICJuYW1lIjogIlBob3RvQm9vdGggVHJpYWwgUGhvdG9zIiwKICAic2hvcnRfbmFtZSI6ICJQaG90b0Jvb3RoIiwKICAic3RhcnRfdXJsIjogIi4iLAogICJkaXNwbGF5IjogInN0YW5kYWxvbmUiLAogICJiYWNrZ3JvdW5kX2NvbG9yIjogIiMwYTE2MjgiLAogICJ0aGVtZV9jb2xvciI6ICIjMGExNjI4IiwKICAiaWNvbnMiOiBbCiAgICB7CiAgICAgICJzcmMiOiAiZGF0YTppbWFnZS9zdmcreG1sLDxzdmcgeG1sbnM9J2h0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnJyB3aWR0aD0nNTEyJyBoZWlnaHQ9JzUxMicgdmlld0JveD0nMCAwIDUxMiA1MTInPjxyZWN0IHdpZHRoPSc1MTInIGhlaWdodD0nNTEyJyByeD0nMTEyJyBmaWxsPSclMjMyNTYzZWInLz48dGV4dCB4PSc1MCUnIHk9JzU1JScgZm9udC1zaXplPScyODAnIHRleHQtYW5jaG9yPSdtaWRkbGUnIGZpbGw9J3doaXRlJz7wn5O4PC90ZXh0Pjwvc3ZnPiIsCiAgICAgICJzaXplcyI6ICI1MTJ4NTEyIiwKICAgICAgInR5cGUiOiAiaW1hZ2Uvc3ZnK3htbCIsCiAgICAgICJwdXJwb3NlIjogImFueSBtYXNrYWJsZSIKICAgIH0KICBdCn0=">
+
+<!-- App Icon for iOS -->
+<link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='180' height='180' viewBox='0 0 180 180'><rect width='180' height='180' rx='40' fill='%232563eb'/><text x='50%25' y='55%25' font-size='100' text-anchor='middle' fill='white'>📸</text></svg>">
+
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body, #root { width: 100%; min-height: 100vh; overflow-x: hidden; }
+  body { background: #0a1628; }
+  input, textarea, button { font-family: inherit; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script>
+  if (window.pdfjsLib) {
+    pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+  }
+</script>
+<script>
+"use strict";
+
+const { useState, useRef, useCallback, useEffect, createElement: h } = React;
+
+// ─── CONSTANTS ───────────────────────────────────────────────────────
+const STEPS = {
+  HOME: "home", TRIAL: "trial", REPS: "reps", TREATMENTS: "treatments",
+  SELECT_REPS: "selectReps", FRONT_BACK: "frontBack", DIRECTIONS: "directions",
+  ARM_IMPORT: "armImport", SAVE_SETUP: "saveSetup", SHOOTING: "shooting",
+  REVIEW: "review", COMPLETE: "complete",
+};
+
+// ─── HELPERS ─────────────────────────────────────────────────────────
+function detectSaveCapabilities() {
+  var hasFileSystemAccess = "showDirectoryPicker" in window;
+  var hasShareFiles = false;
+  try {
+    hasShareFiles = "share" in navigator && "canShare" in navigator &&
+      navigator.canShare({ files: [new File([""], "t.jpg", { type: "image/jpeg" })] });
+  } catch(e) {}
+  var isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  return { hasFileSystemAccess: hasFileSystemAccess, hasShareFiles: hasShareFiles, isIOS: isIOS };
+}
+
+function parseARMText(text) {
+  var mapping = {};
+  var lines = text.replace(/\r/g, "").replace(/\n+/g, "\n").split("\n");
+  for (var i = 0; i < lines.length; i++) {
+    var trimmed = lines[i].trim();
+    var trtMatch = trimmed.match(/^(\d{1,2})\s+/);
+    if (!trtMatch) continue;
+    var trtNum = parseInt(trtMatch[1]);
+    if (trtNum < 1 || trtNum > 99) continue;
+    var plotMatches = trimmed.match(/\b[1-9]\d{2}\b/g);
+    if (!plotMatches || plotMatches.length < 2) continue;
+    for (var j = 0; j < plotMatches.length; j++) {
+      var plotNum = parseInt(plotMatches[j]);
+      if (plotNum >= 100 && plotNum <= 999) mapping[plotNum] = trtNum;
+    }
+  }
+  return mapping;
+}
+
+function parseManualEntry(text) {
+  var mapping = {};
+  var pairRegex = /(\d{3})\s*[=:→\-\>]+\s*(\d{1,2})/g;
+  var m;
+  while ((m = pairRegex.exec(text)) !== null) {
+    mapping[parseInt(m[1])] = parseInt(m[2]);
+  }
+  if (Object.keys(mapping).length > 0) return mapping;
+  var lines = text.trim().split("\n");
+  for (var i = 0; i < lines.length; i++) {
+    var parts = lines[i].trim().split(/\s+/);
+    if (parts.length >= 2) {
+      var plot = parseInt(parts[0]), trt = parseInt(parts[1]);
+      if (plot >= 100 && plot <= 999 && trt >= 1 && trt <= 99) mapping[plot] = trt;
+    }
+  }
+  return mapping;
+}
+
+function buildShootingQueue(config) {
+  var queue = [];
+  var tn = config.trialNumber, sr = config.selectedReps, tt = config.totalTreatments;
+  var nfb = config.needFrontBack, dirs = config.directions, ptm = config.plotTreatmentMap;
+  for (var i = 0; i < sr.length; i++) {
+    var repNum = sr[i], dir = dirs[repNum], repBase = repNum * 100;
+    var plots = [];
+    if (dir === "asc") { for (var t = 1; t <= tt; t++) plots.push(repBase + t); }
+    else { for (var t = tt; t >= 1; t--) plots.push(repBase + t); }
+    for (var p = 0; p < plots.length; p++) {
+      var plot = plots[p], trt = ptm[plot], trtS = trt != null ? "_Trt" + trt : "";
+      queue.push({
+        rep: repNum, plot: plot, treatment: trt != null ? trt : null,
+        side: nfb ? "Front" : null,
+        fileName: nfb ? tn+"_Rep"+repNum+"_Plot"+plot+trtS+"_Front.jpg" : tn+"_Rep"+repNum+"_Plot"+plot+trtS+".jpg",
+        label: nfb ? "Plot "+plot+" — FRONT" : "Plot "+plot,
+        trtLabel: trt != null ? "Treatment "+trt : null,
+      });
+    }
+    if (nfb) {
+      var rev = plots.slice().reverse();
+      for (var p = 0; p < rev.length; p++) {
+        var plot = rev[p], trt = ptm[plot], trtS = trt != null ? "_Trt" + trt : "";
+        queue.push({
+          rep: repNum, plot: plot, treatment: trt != null ? trt : null, side: "Back",
+          fileName: tn+"_Rep"+repNum+"_Plot"+plot+trtS+"_Back.jpg",
+          label: "Plot "+plot+" — BACK",
+          trtLabel: trt != null ? "Treatment "+trt : null,
+        });
+      }
+    }
+  }
+  return queue;
+}
+
+// TTS - needs unlock from user gesture on iOS
+var ttsUnlocked = false;
+function unlockTTS() {
+  if (ttsUnlocked || !("speechSynthesis" in window)) return;
+  // Speak empty string to unlock audio context on iOS
+  var u = new SpeechSynthesisUtterance("");
+  u.volume = 0;
+  window.speechSynthesis.speak(u);
+  ttsUnlocked = true;
+}
+
+function speakLabel(text) {
+  if (!("speechSynthesis" in window)) return;
+  // iOS bug: synth gets stuck, this resets it
+  window.speechSynthesis.cancel();
+  // Small delay after cancel for iOS
+  setTimeout(function() {
+    var u = new SpeechSynthesisUtterance(text);
+    u.rate = 1.0; u.pitch = 1; u.volume = 1;
+    // iOS workaround: if voices aren't loaded, wait for them
+    var voices = window.speechSynthesis.getVoices();
+    if (voices.length > 0) {
+      // Prefer an English voice
+      for (var i = 0; i < voices.length; i++) {
+        if (voices[i].lang && voices[i].lang.indexOf("en") === 0) {
+          u.voice = voices[i];
+          break;
+        }
+      }
+    }
+    window.speechSynthesis.speak(u);
+    // iOS bug: synthesis pauses after ~15s, keep it alive
+    var keepAlive = setInterval(function() {
+      if (!window.speechSynthesis.speaking) { clearInterval(keepAlive); return; }
+      window.speechSynthesis.pause();
+      window.speechSynthesis.resume();
+    }, 5000);
+  }, 100);
+}
+
+function dataUrlToFile(dataUrl, fileName) {
+  var arr = dataUrl.split(","), mime = arr[0].match(/:(.*?);/)[1];
+  var bstr = atob(arr[1]), n = bstr.length, u8 = new Uint8Array(n);
+  while (n--) u8[n] = bstr.charCodeAt(n);
+  return new File([u8], fileName, { type: mime });
+}
+
+function downloadPhoto(photo) {
+  var a = document.createElement("a");
+  a.href = photo.dataUrl; a.download = photo.fileName; a.click();
+}
+
+// ─── MAIN APP ────────────────────────────────────────────────────────
+function PhotoBoothApp() {
+  var _s = useState(STEPS.HOME), step = _s[0], setStep = _s[1];
+  var _c = useState({
+    trialNumber: "", totalReps: 3, totalTreatments: 10, selectedReps: [],
+    needFrontBack: false, directions: {}, plotTreatmentMap: {}, armLoaded: false, saveMethod: "auto",
+  }), config = _c[0], setConfig = _c[1];
+  var _q = useState([]), shootingQueue = _q[0], setShootingQueue = _q[1];
+  var _ci = useState(0), currentIndex = _ci[0], setCurrentIndex = _ci[1];
+  var _ph = useState([]), photos = _ph[0], setPhotos = _ph[1];
+  var _sk = useState([]), skippedPlots = _sk[0], setSkippedPlots = _sk[1];
+  var _n = useState({}), notes = _n[0], setNotes = _n[1];
+  var _sl = useState(true), showingLabel = _sl[0], setShowingLabel = _sl[1];
+  var _ds = useState(0), dirStep = _ds[0], setDirStep = _ds[1];
+  var _sn = useState(false), showNoteInput = _sn[0], setShowNoteInput = _sn[1];
+  var _cn = useState(""), currentNote = _cn[0], setCurrentNote = _cn[1];
+  var _at = useState(""), armText = _at[0], setArmText = _at[1];
+  var _ap = useState(null), armParseStatus = _ap[0], setArmParseStatus = _ap[1];
+  var _pl = useState(false), pdfLoading = _pl[0], setPdfLoading = _pl[1];
+  var _rm = useState(false), retakeMode = _rm[0], setRetakeMode = _rm[1];
+  var _fh = useState(null), folderHandle = _fh[0], setFolderHandle = _fh[1];
+  var _sc = useState({ hasFileSystemAccess: false, hasShareFiles: false, isIOS: false });
+  var saveCapabilities = _sc[0], setSaveCapabilities = _sc[1];
+  var _sf = useState(null), saveFeedback = _sf[0], setSaveFeedback = _sf[1];
+  var fileInputRef = useRef(null), pdfInputRef = useRef(null), noteInputRef = useRef(null);
+
+  var currentShot = shootingQueue[currentIndex];
+  var progress = shootingQueue.length > 0 ? (currentIndex / shootingQueue.length) * 100 : 0;
+
+  useEffect(function() { setSaveCapabilities(detectSaveCapabilities()); }, []);
+
+  // Preload voices for TTS (iOS loads them async)
+  useEffect(function() {
+    if ("speechSynthesis" in window) {
+      window.speechSynthesis.getVoices(); // trigger load
+      window.speechSynthesis.onvoiceschanged = function() {
+        window.speechSynthesis.getVoices();
+      };
+    }
+  }, []);
+
+  useEffect(function() {
+    if (step === STEPS.SHOOTING && showingLabel && currentShot && !showNoteInput && !retakeMode) {
+      var label = currentShot.trtLabel ? currentShot.label + ", " + currentShot.trtLabel : currentShot.label;
+      var timer = setTimeout(function() { speakLabel(label); }, 300);
+      return function() { clearTimeout(timer); };
+    }
+  }, [step, currentIndex, showingLabel, currentShot, showNoteInput, retakeMode]);
+
+  useEffect(function() {
+    if (showNoteInput && noteInputRef.current) noteInputRef.current.focus();
+  }, [showNoteInput]);
+
+  // Save functions
+  var saveToFolder = useCallback(function(photo) {
+    if (!folderHandle) return Promise.resolve(false);
+    // Convert dataUrl to blob directly (more reliable than File)
+    var arr = photo.dataUrl.split(",");
+    var mime = arr[0].match(/:(.*?);/)[1];
+    var bstr = atob(arr[1]);
+    var n = bstr.length;
+    var u8 = new Uint8Array(n);
+    while (n--) u8[n] = bstr.charCodeAt(n);
+    var blob = new Blob([u8], { type: mime });
+
+    return folderHandle.getFileHandle(photo.fileName, { create: true })
+      .then(function(fileHandle) {
+        return fileHandle.createWritable();
+      })
+      .then(function(writable) {
+        return writable.write(blob).then(function() {
+          return writable.close();
+        });
+      })
+      .then(function() {
+        console.log("Saved: " + photo.fileName);
+        return true;
+      })
+      .catch(function(e) {
+        console.error("Folder save failed for " + photo.fileName + ":", e);
+        // Try download as fallback
+        downloadPhoto(photo);
+        return false;
+      });
+  }, [folderHandle]);
+
+  var saveViaShare = useCallback(function(photo) {
+    var file = dataUrlToFile(photo.dataUrl, photo.fileName);
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      return navigator.share({ files: [file], title: photo.fileName })
+        .then(function() { return true; })
+        .catch(function(e) { return e.name === "AbortError" ? true : false; });
+    }
+    return Promise.resolve(false);
+  }, []);
+
+  var saveViaDownload = useCallback(function(photo) {
+    downloadPhoto(photo); return true;
+  }, []);
+
+  var savePhoto = useCallback(function(photo) {
+    var method = config.saveMethod;
+    var p;
+    if (method === "folder" && folderHandle) p = saveToFolder(photo);
+    else if (method === "share") p = saveViaShare(photo);
+    else p = Promise.resolve(saveViaDownload(photo));
+    return Promise.resolve(p).then(function(ok) {
+      if (!ok) saveViaDownload(photo);
+      setSaveFeedback({ type: "success", message: "Saved!" });
+      setTimeout(function() { setSaveFeedback(null); }, 1500);
+      return ok;
+    });
+  }, [config.saveMethod, folderHandle, saveToFolder, saveViaShare, saveViaDownload]);
+
+  var pickFolder = function() {
+    return window.showDirectoryPicker({ mode: "readwrite" })
+      .then(function(handle) {
+        setFolderHandle(handle);
+        setConfig(function(p) { return Object.assign({}, p, { saveMethod: "folder" }); });
+        return handle.name;
+      })
+      .catch(function() { return null; });
+  };
+
+  // PDF upload
+  var handlePDFUpload = function(e) {
+    var file = e.target.files && e.target.files[0];
+    if (!file) return;
+    setPdfLoading(true); setArmParseStatus(null);
+    file.arrayBuffer().then(function(ab) {
+      if (window.pdfjsLib) {
+        return pdfjsLib.getDocument({ data: ab }).promise.then(function(pdf) {
+          var texts = [];
+          var getPage = function(i) {
+            if (i > pdf.numPages) return Promise.resolve(texts.join("\n"));
+            return pdf.getPage(i).then(function(page) {
+              return page.getTextContent();
+            }).then(function(content) {
+              texts.push(content.items.map(function(it) { return it.str; }).join(" "));
+              return getPage(i + 1);
+            });
+          };
+          return getPage(1);
+        }).then(function(fullText) {
+          var mapping = parseARMText(fullText);
+          var count = Object.keys(mapping).length;
+          if (count > 0) {
+            setConfig(function(p) { return Object.assign({}, p, { plotTreatmentMap: mapping, armLoaded: true }); });
+            setArmParseStatus({
+              success: true, message: "Found " + count + " plot→treatment mappings",
+              sample: Object.entries(mapping).slice(0, 6).map(function(e) { return "Plot " + e[0] + " → Trt " + e[1]; }).join(", "),
+            });
+          } else {
+            setArmParseStatus({ success: false, message: "Could not auto-detect mappings. Try manual entry." });
+          }
+        });
+      } else {
+        setArmParseStatus({ success: false, message: "PDF library not loaded. Use manual entry." });
+      }
+    }).catch(function(err) {
+      setArmParseStatus({ success: false, message: "Error: " + err.message });
+    }).finally(function() {
+      setPdfLoading(false);
+      e.target.value = "";
+    });
+  };
+
+  var handleManualParse = function() {
+    var mapping = parseManualEntry(armText);
+    var count = Object.keys(mapping).length;
+    if (count > 0) {
+      setConfig(function(p) { return Object.assign({}, p, { plotTreatmentMap: mapping, armLoaded: true }); });
+      setArmParseStatus({
+        success: true, message: "Parsed " + count + " mappings",
+        sample: Object.entries(mapping).slice(0, 6).map(function(e) { return "Plot " + e[0] + " → Trt " + e[1]; }).join(", "),
+      });
+    } else {
+      setArmParseStatus({ success: false, message: "Could not parse. Check format." });
+    }
+  };
+
+  // Shooting logic
+  var advanceToNext = useCallback(function() {
+    if (currentIndex + 1 < shootingQueue.length) {
+      setCurrentIndex(function(p) { return p + 1; });
+      setShowingLabel(true); setShowNoteInput(false); setCurrentNote(""); setRetakeMode(false);
+    } else {
+      setStep(STEPS.REVIEW);
+    }
+  }, [currentIndex, shootingQueue.length]);
+
+  var handlePhotoCapture = useCallback(function(e) {
+    var file = e.target.files && e.target.files[0];
+    if (!file) return;
+    var reader = new FileReader();
+    reader.onload = function(ev) {
+      var newPhoto = {
+        dataUrl: ev.target.result, fileName: currentShot.fileName, label: currentShot.label,
+        rep: currentShot.rep, plot: currentShot.plot, side: currentShot.side,
+        treatment: currentShot.treatment, index: currentIndex,
+      };
+      if (retakeMode) {
+        setPhotos(function(prev) { return prev.map(function(p) { return p.index === currentIndex ? newPhoto : p; }); });
+        setRetakeMode(false);
+      } else {
+        setPhotos(function(prev) { return prev.concat([newPhoto]); });
+      }
+      // Save to folder — wait for completion before showing note input
+      if (config.saveMethod === "folder" && folderHandle) {
+        savePhoto(newPhoto).then(function() {
+          setShowNoteInput(true);
+        }).catch(function() {
+          setShowNoteInput(true);
+        });
+      } else {
+        setShowNoteInput(true);
+      }
+    };
+    reader.readAsDataURL(file);
+    e.target.value = "";
+  }, [currentShot, currentIndex, config.saveMethod, folderHandle, retakeMode, savePhoto]);
+
+  var saveNoteAndAdvance = function() {
+    if (currentNote.trim()) {
+      setNotes(function(p) { var n = Object.assign({}, p); n[currentIndex] = currentNote.trim(); return n; });
+    }
+    advanceToNext();
+  };
+
+  var skipPlot = function() {
+    setSkippedPlots(function(p) { return p.concat([currentIndex]); });
+    advanceToNext();
+  };
+
+  var startShooting = function() {
+    // Unlock TTS on this user gesture (required for iOS)
+    unlockTTS();
+    var queue = buildShootingQueue(config);
+    setShootingQueue(queue); setCurrentIndex(0); setPhotos([]); setSkippedPlots([]);
+    setNotes({}); setShowingLabel(true); setShowNoteInput(false); setCurrentNote(""); setRetakeMode(false);
+    setStep(STEPS.SHOOTING);
+  };
+
+  var saveAllRemaining = function() {
+    // Sequential save - one at a time for reliability
+    var i = 0;
+    var doNext = function() {
+      if (i < photos.length) {
+        var photo = photos[i];
+        i++;
+        Promise.resolve(savePhoto(photo)).then(function() {
+          setTimeout(doNext, 200);
+        }).catch(function() {
+          setTimeout(doNext, 200);
+        });
+      } else {
+        // Save notes CSV after all photos
+        var noteKeys = Object.keys(notes);
+        if (noteKeys.length > 0) {
+          setTimeout(function() {
+            var rows = ["Plot,Rep,Treatment,Side,Note,FileName"];
+            noteKeys.forEach(function(idx) {
+              var shot = shootingQueue[parseInt(idx)];
+              if (shot) rows.push(shot.plot+","+shot.rep+","+(shot.treatment||"")+","+(shot.side||"")+","+JSON.stringify(notes[idx])+","+shot.fileName);
+            });
+            var blob = new Blob([rows.join("\n")], { type: "text/csv" });
+            var url = URL.createObjectURL(blob);
+            var a = document.createElement("a");
+            a.href = url; a.download = config.trialNumber + "_notes.csv"; a.click();
+            URL.revokeObjectURL(url);
+            setTimeout(function() { setStep(STEPS.COMPLETE); }, 500);
+          }, 300);
+        } else {
+          setStep(STEPS.COMPLETE);
+        }
+      }
+    };
+    doNext();
+  };
+
+  var resetApp = function() {
+    setStep(STEPS.HOME);
+    setConfig({
+      trialNumber: "", totalReps: 3, totalTreatments: 10, selectedReps: [],
+      needFrontBack: false, directions: {}, plotTreatmentMap: {}, armLoaded: false,
+      saveMethod: config.saveMethod,
+    });
+    setShootingQueue([]); setCurrentIndex(0); setPhotos([]); setSkippedPlots([]);
+    setNotes({}); setShowingLabel(true); setShowNoteInput(false); setCurrentNote("");
+    setDirStep(0); setArmText(""); setArmParseStatus(null); setRetakeMode(false);
+  };
+
+  var toggleRep = function(rep) {
+    setConfig(function(prev) {
+      var sel = prev.selectedReps.indexOf(rep) >= 0
+        ? prev.selectedReps.filter(function(r) { return r !== rep; })
+        : prev.selectedReps.concat([rep]).sort(function(a,b) { return a-b; });
+      return Object.assign({}, prev, { selectedReps: sel });
+    });
+  };
+
+  // ─── STYLES ────────────────────────────────────────────────────────
+  var S = {
+    page: {
+      minHeight: "100vh", background: "linear-gradient(145deg, #0a1628 0%, #12233d 50%, #0d1a2e 100%)",
+      color: "#e8edf4", fontFamily: "'SF Pro Display',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif",
+      display: "flex", flexDirection: "column", alignItems: "center", padding: "24px 16px", boxSizing: "border-box",
+    },
+    card: {
+      background: "rgba(255,255,255,0.06)", backdropFilter: "blur(20px)", borderRadius: "20px",
+      border: "1px solid rgba(255,255,255,0.1)", padding: "28px 24px", width: "100%", maxWidth: "420px", boxSizing: "border-box",
+    },
+    btnP: {
+      width: "100%", padding: "18px 24px", borderRadius: "14px", border: "none",
+      background: "linear-gradient(135deg,#2563eb,#1d4ed8)", color: "white", fontSize: "18px",
+      fontWeight: "700", cursor: "pointer", boxShadow: "0 4px 20px rgba(37,99,235,0.35)",
+    },
+    btnS: {
+      width: "100%", padding: "18px 24px", borderRadius: "14px",
+      background: "rgba(255,255,255,0.1)", border: "1px solid rgba(255,255,255,0.2)",
+      color: "white", fontSize: "18px", fontWeight: "700", cursor: "pointer",
+    },
+    btnG: {
+      width: "100%", padding: "18px 24px", borderRadius: "14px", border: "none",
+      background: "linear-gradient(135deg,#16a34a,#15803d)", color: "white", fontSize: "18px",
+      fontWeight: "700", cursor: "pointer", boxShadow: "0 4px 20px rgba(22,163,74,0.35)",
+    },
+    btnW: {
+      width: "100%", padding: "18px 24px", borderRadius: "14px", border: "none",
+      background: "linear-gradient(135deg,#d97706,#b45309)", color: "white", fontSize: "18px",
+      fontWeight: "700", cursor: "pointer",
+    },
+    btnD: {
+      width: "100%", padding: "14px 20px", borderRadius: "14px",
+      background: "rgba(220,38,38,0.15)", border: "1px solid rgba(220,38,38,0.3)",
+      color: "#fca5a5", fontSize: "15px", fontWeight: "700", cursor: "pointer",
+    },
+    input: {
+      width: "100%", padding: "16px 18px", borderRadius: "12px",
+      border: "1px solid rgba(255,255,255,0.15)", background: "rgba(255,255,255,0.08)",
+      color: "#e8edf4", fontSize: "18px", fontWeight: "500", boxSizing: "border-box", outline: "none",
+    },
+    label: {
+      fontSize: "14px", fontWeight: "600", color: "rgba(255,255,255,0.5)",
+      textTransform: "uppercase", letterSpacing: "1.2px", marginBottom: "10px", display: "block",
+    },
+    title: { fontSize: "28px", fontWeight: "800", margin: "0 0 6px", letterSpacing: "-0.5px" },
+    sub: { fontSize: "15px", color: "rgba(255,255,255,0.45)", margin: "0 0 28px", fontWeight: "400" },
+  };
+
+  var optBtn = function(sel) {
+    return {
+      padding: "18px 20px", borderRadius: "14px", width: "100%",
+      border: sel ? "2px solid #2563eb" : "1px solid rgba(255,255,255,0.12)",
+      background: sel ? "rgba(37,99,235,0.15)" : "rgba(255,255,255,0.04)",
+      color: "#e8edf4", textAlign: "left", cursor: "pointer",
+    };
+  };
+
+  var stepBtn = function(val, onChange, min) {
+    min = min || 1;
+    var bstyle = {
+      width: "56px", height: "56px", borderRadius: "50%",
+      border: "1px solid rgba(255,255,255,0.2)", background: "rgba(255,255,255,0.08)",
+      color: "white", fontSize: "28px", cursor: "pointer",
+      display: "flex", alignItems: "center", justifyContent: "center",
+    };
+    return h("div", { style: { display: "flex", alignItems: "center", justifyContent: "center", gap: "20px", margin: "20px 0" } },
+      h("button", { style: bstyle, onClick: function() { onChange(Math.max(min, val - 1)); } }, "−"),
+      h("span", { style: { fontSize: "48px", fontWeight: "800", minWidth: "60px", textAlign: "center" } }, val),
+      h("button", { style: bstyle, onClick: function() { onChange(val + 1); } }, "+")
+    );
+  };
+
+  // ─── RENDER ────────────────────────────────────────────────────────
+
+  // HOME
+  if (step === STEPS.HOME) {
+    return h("div", { style: S.page },
+      h("div", { style: { textAlign: "center", marginTop: "60px", marginBottom: "40px" } },
+        h("div", { style: {
+          width: "80px", height: "80px", borderRadius: "22px",
+          background: "linear-gradient(135deg,#2563eb,#7c3aed)",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          margin: "0 auto 24px", boxShadow: "0 8px 32px rgba(37,99,235,0.3)", fontSize: "36px",
+        } }, "📸"),
+        h("h1", { style: Object.assign({}, S.title, { fontSize: "34px" }) }, "PhotoBooth"),
+        h("p", { style: Object.assign({}, S.sub, { fontSize: "16px" }) }, "Trial Photo Assistant")
+      ),
+      h("div", { style: Object.assign({}, S.card, { textAlign: "center" }) },
+        h("button", { style: S.btnP, onClick: function() { setStep(STEPS.TRIAL); } }, "Manual Mode"),
+        h("p", { style: { fontSize: "13px", color: "rgba(255,255,255,0.3)", marginTop: "16px", marginBottom: 0 } },
+          "Configure trial → auto-label → shoot")
+      ),
+      folderHandle ? h("div", { style: Object.assign({}, S.card, { marginTop: "16px", textAlign: "center" }) },
+        h("p", { style: { margin: 0, fontSize: "13px", color: "rgba(255,255,255,0.4)" } },
+          "Save destination: ",
+          h("span", { style: { color: "#4ade80", fontWeight: "600" } }, "📁 " + folderHandle.name))
+      ) : null
+    );
+  }
+
+  // TRIAL
+  if (step === STEPS.TRIAL) {
+    return h("div", { style: S.page },
+      h("div", { style: S.card },
+        h("p", { style: S.label }, "Step 1 of 8"),
+        h("h2", { style: S.title }, "Trial Number"),
+        h("p", { style: S.sub }, "Enter a name or number for this trial"),
+        h("input", {
+          style: S.input, type: "text", placeholder: "e.g., CornTrial1",
+          value: config.trialNumber, autoFocus: true,
+          onChange: function(e) { setConfig(Object.assign({}, config, { trialNumber: e.target.value })); }
+        }),
+        h("div", { style: { display: "flex", gap: "12px", marginTop: "24px" } },
+          h("button", { style: S.btnS, onClick: function() { setStep(STEPS.HOME); } }, "Back"),
+          h("button", {
+            style: Object.assign({}, S.btnP, { opacity: config.trialNumber.trim() ? 1 : 0.4 }),
+            onClick: function() { if (config.trialNumber.trim()) setStep(STEPS.REPS); }
+          }, "Next")
+        )
+      )
+    );
+  }
+
+  // REPS
+  if (step === STEPS.REPS) {
+    return h("div", { style: S.page }, h("div", { style: S.card },
+      h("p", { style: S.label }, "Step 2 of 8"),
+      h("h2", { style: S.title }, "Number of Reps"),
+      h("p", { style: S.sub }, "How many reps in this trial?"),
+      stepBtn(config.totalReps, function(v) { setConfig(Object.assign({}, config, { totalReps: v })); }),
+      h("div", { style: { display: "flex", gap: "12px", marginTop: "24px" } },
+        h("button", { style: S.btnS, onClick: function() { setStep(STEPS.TRIAL); } }, "Back"),
+        h("button", { style: S.btnP, onClick: function() { setStep(STEPS.TREATMENTS); } }, "Next"))
+    ));
+  }
+
+  // TREATMENTS
+  if (step === STEPS.TREATMENTS) {
+    return h("div", { style: S.page }, h("div", { style: S.card },
+      h("p", { style: S.label }, "Step 3 of 8"),
+      h("h2", { style: S.title }, "Treatments per Rep"),
+      h("p", { style: S.sub }, "How many treatments in each rep?"),
+      stepBtn(config.totalTreatments, function(v) { setConfig(Object.assign({}, config, { totalTreatments: v })); }),
+      h("div", { style: { display: "flex", gap: "12px", marginTop: "24px" } },
+        h("button", { style: S.btnS, onClick: function() { setStep(STEPS.REPS); } }, "Back"),
+        h("button", { style: S.btnP, onClick: function() { setStep(STEPS.SELECT_REPS); } }, "Next"))
+    ));
+  }
+
+  // SELECT REPS
+  if (step === STEPS.SELECT_REPS) {
+    var allReps = []; for (var i = 1; i <= config.totalReps; i++) allReps.push(i);
+    var allSel = config.selectedReps.length === config.totalReps;
+    return h("div", { style: S.page }, h("div", { style: S.card },
+      h("p", { style: S.label }, "Step 4 of 8"),
+      h("h2", { style: S.title }, "Select Reps"),
+      h("p", { style: S.sub }, "Which reps will you photograph?"),
+      h("button", {
+        style: Object.assign({}, S.btnS, { marginBottom: "14px", padding: "12px", fontSize: "14px",
+          background: allSel ? "rgba(37,99,235,0.2)" : "rgba(255,255,255,0.05)" }),
+        onClick: function() { setConfig(Object.assign({}, config, { selectedReps: allSel ? [] : allReps.slice() })); }
+      }, allSel ? "Deselect All" : "Select All"),
+      h("div", { style: { display: "flex", flexWrap: "wrap", gap: "10px", marginBottom: "24px" } },
+        allReps.map(function(rep) {
+          var sel = config.selectedReps.indexOf(rep) >= 0;
+          return h("button", { key: rep, onClick: function() { toggleRep(rep); }, style: {
+            flex: "1 0 calc(33% - 10px)", minWidth: "80px", padding: "16px 8px", borderRadius: "12px",
+            border: sel ? "2px solid #2563eb" : "1px solid rgba(255,255,255,0.15)",
+            background: sel ? "rgba(37,99,235,0.2)" : "rgba(255,255,255,0.05)",
+            color: sel ? "#93bbfc" : "rgba(255,255,255,0.5)", fontSize: "16px", fontWeight: "700", cursor: "pointer",
+          } }, "Rep " + rep);
+        })
+      ),
+      h("div", { style: { display: "flex", gap: "12px" } },
+        h("button", { style: S.btnS, onClick: function() { setStep(STEPS.TREATMENTS); } }, "Back"),
+        h("button", {
+          style: Object.assign({}, S.btnP, { opacity: config.selectedReps.length > 0 ? 1 : 0.4 }),
+          onClick: function() { if (config.selectedReps.length > 0) setStep(STEPS.FRONT_BACK); }
+        }, "Next"))
+    ));
+  }
+
+  // FRONT & BACK
+  if (step === STEPS.FRONT_BACK) {
+    return h("div", { style: S.page }, h("div", { style: S.card },
+      h("p", { style: S.label }, "Step 5 of 8"),
+      h("h2", { style: S.title }, "Front & Back?"),
+      h("p", { style: S.sub }, "Do you need front AND back photos of each plot?"),
+      h("div", { style: { display: "flex", flexDirection: "column", gap: "12px", marginBottom: "24px" } },
+        h("button", { style: optBtn(config.needFrontBack === true),
+          onClick: function() { setConfig(Object.assign({}, config, { needFrontBack: true })); } },
+          h("div", { style: { fontSize: "17px", fontWeight: "700" } }, "Yes — Front & Back"),
+          h("div", { style: { fontSize: "13px", color: "rgba(255,255,255,0.4)", marginTop: "4px" } }, "All fronts first, then backs (reversed)")
+        ),
+        h("button", { style: optBtn(config.needFrontBack === false),
+          onClick: function() { setConfig(Object.assign({}, config, { needFrontBack: false })); } },
+          h("div", { style: { fontSize: "17px", fontWeight: "700" } }, "No — One photo per plot"),
+          h("div", { style: { fontSize: "13px", color: "rgba(255,255,255,0.4)", marginTop: "4px" } }, "Single photo of each plot")
+        )
+      ),
+      h("div", { style: { display: "flex", gap: "12px" } },
+        h("button", { style: S.btnS, onClick: function() { setStep(STEPS.SELECT_REPS); } }, "Back"),
+        h("button", { style: S.btnP, onClick: function() { setDirStep(0); setStep(STEPS.DIRECTIONS); } }, "Next"))
+    ));
+  }
+
+  // DIRECTIONS
+  if (step === STEPS.DIRECTIONS) {
+    var cRep = config.selectedReps[dirStep], cDir = config.directions[cRep], rBase = cRep * 100;
+    var setDir = function(d) { setConfig(function(p) { var dirs = Object.assign({}, p.directions); dirs[cRep] = d; return Object.assign({}, p, { directions: dirs }); }); };
+    return h("div", { style: S.page }, h("div", { style: S.card },
+      h("p", { style: S.label }, "Step 6 of 8 — Rep " + cRep + " (" + (dirStep+1) + "/" + config.selectedReps.length + ")"),
+      h("h2", { style: S.title }, "Direction"),
+      h("p", { style: S.sub }, "Which way for Rep " + cRep + "?"),
+      h("div", { style: { display: "flex", flexDirection: "column", gap: "12px", marginBottom: "24px" } },
+        h("button", { style: optBtn(cDir === "asc"), onClick: function() { setDir("asc"); } },
+          h("div", { style: { fontSize: "17px", fontWeight: "700" } }, "→ Left to Right"),
+          h("div", { style: { fontSize: "13px", color: "rgba(255,255,255,0.4)", marginTop: "4px" } },
+            (rBase+1) + " → " + (rBase+2) + " → ... → " + (rBase+config.totalTreatments))
+        ),
+        h("button", { style: optBtn(cDir === "desc"), onClick: function() { setDir("desc"); } },
+          h("div", { style: { fontSize: "17px", fontWeight: "700" } }, "← Right to Left"),
+          h("div", { style: { fontSize: "13px", color: "rgba(255,255,255,0.4)", marginTop: "4px" } },
+            (rBase+config.totalTreatments) + " → ... → " + (rBase+1))
+        )
+      ),
+      h("div", { style: { display: "flex", gap: "12px" } },
+        h("button", { style: S.btnS, onClick: function() { if (dirStep > 0) setDirStep(dirStep-1); else setStep(STEPS.FRONT_BACK); } }, "Back"),
+        h("button", {
+          style: Object.assign({}, S.btnP, { opacity: cDir ? 1 : 0.4 }),
+          onClick: function() { if (!cDir) return; if (dirStep+1 < config.selectedReps.length) setDirStep(dirStep+1); else setStep(STEPS.ARM_IMPORT); }
+        }, dirStep+1 < config.selectedReps.length ? "Next Rep" : "Next"))
+    ));
+  }
+
+  // ARM IMPORT
+  if (step === STEPS.ARM_IMPORT) {
+    var mapC = Object.keys(config.plotTreatmentMap).length;
+    return h("div", { style: S.page }, h("div", { style: Object.assign({}, S.card, { maxWidth: "460px" }) },
+      h("p", { style: S.label }, "Step 7 of 8"),
+      h("h2", { style: S.title }, "ARM Treatment Map"),
+      h("p", { style: S.sub }, "Optional — map plots to treatments for file names"),
+
+      h("div", { style: { background: "rgba(255,255,255,0.04)", borderRadius: "14px", padding: "20px", marginBottom: "16px", border: "1px solid rgba(255,255,255,0.08)" } },
+        h("p", { style: { margin: "0 0 12px", fontSize: "15px", fontWeight: "700" } }, "Upload ARM PDF"),
+        h("input", { ref: pdfInputRef, type: "file", accept: ".pdf", onChange: handlePDFUpload, style: { display: "none" } }),
+        h("button", { style: Object.assign({}, S.btnS, { padding: "14px", fontSize: "15px" }),
+          onClick: function() { pdfInputRef.current && pdfInputRef.current.click(); }, disabled: pdfLoading },
+          pdfLoading ? "Reading PDF..." : "Choose PDF File")
+      ),
+
+      h("div", { style: { background: "rgba(255,255,255,0.04)", borderRadius: "14px", padding: "20px", marginBottom: "16px", border: "1px solid rgba(255,255,255,0.08)" } },
+        h("p", { style: { margin: "0 0 4px", fontSize: "15px", fontWeight: "700" } }, "Or Enter Manually"),
+        h("p", { style: { margin: "0 0 12px", fontSize: "12px", color: "rgba(255,255,255,0.35)" } }, "Format: plot=treatment (e.g., 101=1, 102=9)"),
+        h("textarea", {
+          style: Object.assign({}, S.input, { fontSize: "14px", minHeight: "100px", resize: "vertical", fontFamily: "monospace" }),
+          placeholder: "101=1, 102=9, 103=2\n201=5, 202=3",
+          value: armText, onChange: function(e) { setArmText(e.target.value); }
+        }),
+        h("button", { style: Object.assign({}, S.btnS, { padding: "12px", fontSize: "14px", marginTop: "10px" }),
+          onClick: handleManualParse, disabled: !armText.trim() }, "Parse Manual Entry")
+      ),
+
+      armParseStatus ? h("div", { style: {
+        background: armParseStatus.success ? "rgba(22,163,74,0.12)" : "rgba(220,38,38,0.12)",
+        border: "1px solid " + (armParseStatus.success ? "rgba(22,163,74,0.3)" : "rgba(220,38,38,0.3)"),
+        borderRadius: "12px", padding: "14px", marginBottom: "16px",
+      } },
+        h("p", { style: { margin: 0, fontSize: "14px", fontWeight: "600", color: armParseStatus.success ? "#4ade80" : "#fca5a5" } },
+          (armParseStatus.success ? "✓ " : "✗ ") + armParseStatus.message),
+        armParseStatus.sample ? h("p", { style: { margin: "8px 0 0", fontSize: "12px", color: "rgba(255,255,255,0.4)", fontFamily: "monospace" } },
+          armParseStatus.sample + "...") : null
+      ) : null,
+
+      mapC > 0 ? h("div", { style: { background: "rgba(37,99,235,0.1)", borderRadius: "12px", padding: "14px", marginBottom: "16px", border: "1px solid rgba(37,99,235,0.25)" } },
+        h("p", { style: { margin: 0, fontSize: "14px", color: "#93bbfc", fontWeight: "600" } }, "✓ " + mapC + " mappings loaded"),
+        h("button", { style: { background: "none", border: "none", color: "#fca5a5", fontSize: "12px", cursor: "pointer", padding: "4px 0", marginTop: "6px" },
+          onClick: function() { setConfig(function(p) { return Object.assign({}, p, { plotTreatmentMap: {}, armLoaded: false }); }); setArmParseStatus(null); setArmText(""); }
+        }, "Clear mapping")
+      ) : null,
+
+      h("div", { style: { display: "flex", gap: "12px" } },
+        h("button", { style: S.btnS, onClick: function() { setDirStep(config.selectedReps.length-1); setStep(STEPS.DIRECTIONS); } }, "Back"),
+        h("button", { style: S.btnP, onClick: function() { setStep(STEPS.SAVE_SETUP); } }, mapC > 0 ? "Next" : "Skip — No Mapping"))
+    ));
+  }
+
+  // SAVE SETUP
+  if (step === STEPS.SAVE_SETUP) {
+    var totalPhotos = buildShootingQueue(config).length;
+    var mapC = Object.keys(config.plotTreatmentMap).length;
+    var caps = saveCapabilities, method = config.saveMethod;
+
+    return h("div", { style: S.page }, h("div", { style: Object.assign({}, S.card, { maxWidth: "460px" }) },
+      h("p", { style: S.label }, "Step 8 of 8"),
+      h("h2", { style: S.title }, "Save Destination"),
+      h("p", { style: S.sub }, "Choose where photos will be saved"),
+
+      h("div", { style: { display: "flex", flexDirection: "column", gap: "12px", marginBottom: "24px" } },
+
+        caps.hasFileSystemAccess ? h("button", {
+          style: optBtn(method === "folder"),
+          onClick: function() { pickFolder(); }
+        },
+          h("div", { style: { fontSize: "17px", fontWeight: "700" } },
+            "📁 Choose Folder",
+            folderHandle ? h("span", { style: { color: "#4ade80", fontSize: "14px", marginLeft: "8px" } }, "(" + folderHandle.name + ")") : null),
+          h("div", { style: { fontSize: "13px", color: "rgba(255,255,255,0.4)", marginTop: "4px" } },
+            "Pick a folder — photos save directly, no prompts")
+        ) : null,
+
+        caps.hasShareFiles ? h("button", {
+          style: optBtn(method === "share"),
+          onClick: function() { setConfig(Object.assign({}, config, { saveMethod: "share" })); }
+        },
+          h("div", { style: { fontSize: "17px", fontWeight: "700" } }, "📤 Save to Files (Share Sheet)"),
+          h("div", { style: { fontSize: "13px", color: "rgba(255,255,255,0.4)", marginTop: "4px" } },
+            caps.isIOS ? "Tap \"Save to Files\" and pick your folder" : "Use share menu to save to your location")
+        ) : null,
+
+        h("button", {
+          style: optBtn(method === "download"),
+          onClick: function() { setConfig(Object.assign({}, config, { saveMethod: "download" })); }
+        },
+          h("div", { style: { fontSize: "17px", fontWeight: "700" } }, "⬇️ Download to Default Folder"),
+          h("div", { style: { fontSize: "13px", color: "rgba(255,255,255,0.4)", marginTop: "4px" } },
+            caps.isIOS ? "Saves to Safari Downloads folder (set in Settings → Safari → Downloads)" : "Saves to browser Downloads folder")
+        )
+      ),
+
+      caps.isIOS && method === "download" ? h("div", { style: {
+        background: "rgba(234,179,8,0.1)", borderRadius: "12px", padding: "14px", marginBottom: "16px",
+        border: "1px solid rgba(234,179,8,0.25)",
+      } },
+        h("p", { style: { margin: 0, fontSize: "13px", color: "#fbbf24", lineHeight: "1.5" } },
+          "💡 Tip: Go to Settings → Safari → Downloads and change the location to your trial photos folder before starting.")
+      ) : null,
+
+      caps.isIOS && method === "share" ? h("div", { style: {
+        background: "rgba(37,99,235,0.1)", borderRadius: "12px", padding: "14px", marginBottom: "16px",
+        border: "1px solid rgba(37,99,235,0.25)",
+      } },
+        h("p", { style: { margin: 0, fontSize: "13px", color: "#93bbfc", lineHeight: "1.5" } },
+          "💡 Tip: The first time, tap \"Save to Files\" and pick your folder. iOS will remember it as a quick option after that.")
+      ) : null,
+
+      // Summary
+      h("div", { style: { background: "rgba(255,255,255,0.04)", borderRadius: "12px", padding: "16px", marginBottom: "24px", border: "1px solid rgba(255,255,255,0.08)" } },
+        h("p", { style: { margin: "0 0 10px", fontSize: "12px", fontWeight: "700", color: "rgba(255,255,255,0.4)", textTransform: "uppercase", letterSpacing: "1px" } }, "Session Summary"),
+        h("p", { style: { margin: "0 0 4px", fontSize: "14px" } },
+          h("span", { style: { color: "rgba(255,255,255,0.5)" } }, "Trial: "), config.trialNumber),
+        h("p", { style: { margin: "0 0 4px", fontSize: "14px" } },
+          h("span", { style: { color: "rgba(255,255,255,0.5)" } }, "Reps: "), config.selectedReps.map(function(r) { return "Rep "+r; }).join(", ")),
+        h("p", { style: { margin: "0 0 4px", fontSize: "14px" } },
+          h("span", { style: { color: "rgba(255,255,255,0.5)" } }, "Treatments: "), config.totalTreatments + " per rep"),
+        h("p", { style: { margin: "0 0 4px", fontSize: "14px" } },
+          h("span", { style: { color: "rgba(255,255,255,0.5)" } }, "Front/Back: "), config.needFrontBack ? "Yes" : "No"),
+        mapC > 0 ? h("p", { style: { margin: "0 0 4px", fontSize: "14px" } },
+          h("span", { style: { color: "rgba(255,255,255,0.5)" } }, "ARM: "), mapC + " plots mapped") : null,
+        h("p", { style: { margin: "8px 0 0", fontSize: "16px", fontWeight: "700", color: "#93bbfc" } }, "📷 " + totalPhotos + " total photos")
+      ),
+
+      h("div", { style: { display: "flex", gap: "12px" } },
+        h("button", { style: S.btnS, onClick: function() { setStep(STEPS.ARM_IMPORT); } }, "Back"),
+        h("button", {
+          style: Object.assign({}, S.btnG, { opacity: method !== "auto" ? 1 : 0.4 }),
+          onClick: function() { if (method !== "auto") startShooting(); }
+        }, "Start Shooting"))
+    ));
+  }
+
+  // SHOOTING
+  if (step === STEPS.SHOOTING && currentShot) {
+    var isNewRep = currentIndex === 0 || shootingQueue[currentIndex-1].rep !== currentShot.rep;
+    var isBackStart = currentIndex > 0 && currentShot.side === "Back" && shootingQueue[currentIndex-1].side === "Front";
+    var repDone = shootingQueue.slice(0, currentIndex).filter(function(s) { return s.rep === currentShot.rep; }).length;
+    var repTotal = shootingQueue.filter(function(s) { return s.rep === currentShot.rep; }).length;
+
+    if (showNoteInput) {
+      return h("div", { style: Object.assign({}, S.page, { justifyContent: "center" }) },
+        h("div", { style: Object.assign({}, S.card, { maxWidth: "420px" }) },
+          saveFeedback ? h("div", { style: {
+            background: "rgba(22,163,74,0.15)", borderRadius: "10px", padding: "10px",
+            marginBottom: "14px", textAlign: "center", color: "#4ade80", fontSize: "14px", fontWeight: "600",
+          } }, "✓ Photo saved") : null,
+          h("h3", { style: Object.assign({}, S.title, { fontSize: "22px" }) }, "Add Note?"),
+          h("p", { style: Object.assign({}, S.sub, { marginBottom: "16px" }) },
+            currentShot.label + (currentShot.trtLabel ? " (" + currentShot.trtLabel + ")" : "")),
+          h("textarea", {
+            ref: noteInputRef,
+            style: Object.assign({}, S.input, { minHeight: "80px", resize: "vertical", fontSize: "16px" }),
+            placeholder: "Optional notes for this plot...",
+            value: currentNote, onChange: function(e) { setCurrentNote(e.target.value); }
+          }),
+          h("div", { style: { display: "flex", gap: "12px", marginTop: "16px" } },
+            h("button", { style: Object.assign({}, S.btnP, { fontSize: "15px", padding: "14px" }),
+              onClick: saveNoteAndAdvance },
+              currentNote.trim() ? "Save Note & Next" : "Next — No Note")
+          ),
+          h("button", { style: Object.assign({}, S.btnD, { marginTop: "10px", width: "100%" }),
+            onClick: function() { setShowNoteInput(false); setRetakeMode(true); } }, "Retake This Photo")
+        )
+      );
+    }
+
+    return h("div", { style: Object.assign({}, S.page, { padding: "16px", justifyContent: "space-between", minHeight: "100vh" }) },
+      // Top bar
+      h("div", { style: { width: "100%", maxWidth: "420px" } },
+        h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" } },
+          h("span", { style: { fontSize: "13px", color: "rgba(255,255,255,0.4)", fontWeight: "600" } },
+            (currentIndex+1) + " of " + shootingQueue.length),
+          h("div", { style: { display: "flex", alignItems: "center", gap: "8px" } },
+            config.saveMethod === "folder" && folderHandle
+              ? h("span", { style: { fontSize: "11px", color: "#4ade80" } }, "📁 " + folderHandle.name) : null,
+            h("span", { style: { fontSize: "13px", color: "rgba(255,255,255,0.4)", fontWeight: "600" } },
+              "Rep " + currentShot.rep + " — " + (repDone+1) + "/" + repTotal))
+        ),
+        h("div", { style: { width: "100%", height: "6px", borderRadius: "3px", background: "rgba(255,255,255,0.08)" } },
+          h("div", { style: {
+            height: "100%", borderRadius: "3px", background: "linear-gradient(90deg,#2563eb,#7c3aed)",
+            width: progress + "%", transition: "width 0.3s ease",
+          } }))
+      ),
+
+      // Main label
+      h("div", { style: { textAlign: "center", flex: 1, display: "flex", flexDirection: "column", justifyContent: "center" } },
+        (isNewRep || isBackStart) ? h("div", { style: {
+          background: isBackStart ? "rgba(234,179,8,0.15)" : "rgba(37,99,235,0.15)",
+          border: "1px solid " + (isBackStart ? "rgba(234,179,8,0.3)" : "rgba(37,99,235,0.3)"),
+          borderRadius: "10px", padding: "10px 16px", marginBottom: "16px",
+          fontSize: "14px", fontWeight: "600", color: isBackStart ? "#fbbf24" : "#93bbfc",
+        } }, isBackStart ? "📷 Now taking BACK photos (reversed)" : "Starting Rep " + currentShot.rep) : null,
+
+        retakeMode ? h("div", { style: {
+          background: "rgba(220,38,38,0.15)", border: "1px solid rgba(220,38,38,0.3)",
+          borderRadius: "10px", padding: "10px 16px", marginBottom: "16px",
+          fontSize: "14px", fontWeight: "600", color: "#fca5a5",
+        } }, "Retaking — this will replace the previous photo") : null,
+
+        h("div", { style: { fontSize: "56px", fontWeight: "900", letterSpacing: "-1px", lineHeight: "1.1", marginBottom: "8px" } },
+          "Plot " + currentShot.plot),
+
+        currentShot.side ? h("div", { style: {
+          display: "inline-block", margin: "0 auto", padding: "6px 24px", borderRadius: "100px",
+          background: currentShot.side === "Front" ? "rgba(37,99,235,0.2)" : "rgba(234,179,8,0.2)",
+          color: currentShot.side === "Front" ? "#93bbfc" : "#fbbf24",
+          fontSize: "20px", fontWeight: "700", letterSpacing: "2px", textTransform: "uppercase",
+        } }, currentShot.side) : null,
+
+        currentShot.trtLabel ? h("div", { style: {
+          marginTop: "12px", padding: "6px 18px", borderRadius: "100px",
+          display: "inline-block", background: "rgba(124,58,237,0.15)",
+          border: "1px solid rgba(124,58,237,0.3)", color: "#c4b5fd",
+          fontSize: "16px", fontWeight: "600", margin: "12px auto 0",
+        } }, currentShot.trtLabel) : null,
+
+        h("p", { style: { fontSize: "12px", color: "rgba(255,255,255,0.25)", marginTop: "16px", fontFamily: "monospace" } },
+          currentShot.fileName)
+      ),
+
+      // Bottom buttons
+      h("div", { style: { width: "100%", maxWidth: "420px" } },
+        h("input", { ref: fileInputRef, type: "file", accept: "image/*", capture: "environment",
+          onChange: handlePhotoCapture, style: { display: "none" } }),
+        h("button", {
+          style: Object.assign({}, S.btnG, { padding: "22px", fontSize: "20px",
+            boxShadow: "0 6px 28px rgba(22,163,74,0.4)", marginBottom: "10px" }),
+          onClick: function() { unlockTTS(); fileInputRef.current && fileInputRef.current.click(); }
+        }, "📷 " + (retakeMode ? "Retake Photo" : "Take Photo")),
+
+        h("div", { style: { display: "flex", gap: "10px", marginBottom: "10px" } },
+          h("button", {
+            style: Object.assign({}, S.btnW, { flex: 1, padding: "14px", fontSize: "14px" }),
+            onClick: function() { if (window.confirm("Skip Plot " + currentShot.plot + "?")) skipPlot(); }
+          }, "Skip Plot"),
+          retakeMode ? h("button", {
+            style: Object.assign({}, S.btnS, { flex: 1, padding: "14px", fontSize: "14px" }),
+            onClick: function() { setRetakeMode(false); setShowNoteInput(true); }
+          }, "Cancel Retake") : null
+        ),
+
+        h("button", {
+          style: Object.assign({}, S.btnS, { padding: "12px", fontSize: "13px", color: "rgba(255,255,255,0.35)" }),
+          onClick: function() {
+            if (window.confirm("Stop shooting?")) {
+              if (photos.length > 0) setStep(STEPS.REVIEW); else setStep(STEPS.COMPLETE);
+            }
+          }
+        }, "Stop Early")
+      )
+    );
+  }
+
+  // REVIEW
+  if (step === STEPS.REVIEW) {
+    var noteCount = Object.keys(notes).length;
+    var needsSave = config.saveMethod !== "folder";
+    return h("div", { style: S.page }, h("div", { style: Object.assign({}, S.card, { maxWidth: "500px" }) },
+      h("h2", { style: S.title }, "Review & Save"),
+      h("p", { style: S.sub },
+        photos.length + " photos" +
+        (skippedPlots.length > 0 ? ", " + skippedPlots.length + " skipped" : "") +
+        (noteCount > 0 ? ", " + noteCount + " notes" : "") +
+        (config.saveMethod === "folder" && folderHandle ? " — saved to " + folderHandle.name : "")),
+
+      h("div", { style: { maxHeight: "400px", overflowY: "auto", marginBottom: "20px" } },
+        photos.map(function(photo, i) {
+          var noteText = notes[photo.index];
+          return h("div", { key: i, style: {
+            display: "flex", alignItems: "center", gap: "12px", padding: "10px",
+            borderBottom: "1px solid rgba(255,255,255,0.06)",
+          } },
+            h("img", { src: photo.dataUrl, alt: photo.label,
+              style: { width: "56px", height: "56px", borderRadius: "8px", objectFit: "cover" } }),
+            h("div", { style: { flex: 1 } },
+              h("div", { style: { fontSize: "14px", fontWeight: "600" } }, photo.label),
+              photo.treatment != null ? h("div", { style: { fontSize: "11px", color: "#c4b5fd" } }, "Treatment " + photo.treatment) : null,
+              h("div", { style: { fontSize: "11px", color: "rgba(255,255,255,0.35)", fontFamily: "monospace" } }, photo.fileName),
+              noteText ? h("div", { style: { fontSize: "11px", color: "#fbbf24", marginTop: "2px" } }, "📝 " + noteText) : null
+            ),
+            needsSave ? h("button", {
+              onClick: function() { savePhoto(photo); },
+              style: {
+                padding: "8px 12px", borderRadius: "8px",
+                border: "1px solid rgba(255,255,255,0.15)", background: "rgba(255,255,255,0.05)",
+                color: "#93bbfc", fontSize: "12px", fontWeight: "600", cursor: "pointer",
+              }
+            }, "Save") : null
+          );
+        })
+      ),
+
+      needsSave
+        ? h("button", { style: S.btnG, onClick: saveAllRemaining },
+            config.saveMethod === "share" ? "Save All via Share Sheet" :
+            "Download All (" + photos.length + " Photos" + (noteCount > 0 ? " + Notes" : "") + ")")
+        : h("div", { style: {
+            background: "rgba(22,163,74,0.12)", borderRadius: "12px", padding: "14px",
+            marginBottom: "12px", textAlign: "center", border: "1px solid rgba(22,163,74,0.25)",
+          } }, h("p", { style: { margin: 0, fontSize: "15px", color: "#4ade80", fontWeight: "600" } },
+            "✓ All photos saved to " + (folderHandle ? folderHandle.name : "folder"))),
+
+      h("button", { style: Object.assign({}, S.btnP, { marginTop: "12px" }),
+        onClick: function() { setStep(STEPS.COMPLETE); } }, "Done")
+    ));
+  }
+
+  // COMPLETE
+  if (step === STEPS.COMPLETE) {
+    var noteCount = Object.keys(notes).length;
+    return h("div", { style: S.page },
+      h("div", { style: { textAlign: "center", marginTop: "80px", marginBottom: "40px" } },
+        h("div", { style: {
+          width: "80px", height: "80px", borderRadius: "50%",
+          background: "linear-gradient(135deg,#16a34a,#22c55e)",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          margin: "0 auto 24px", fontSize: "36px", boxShadow: "0 8px 32px rgba(22,163,74,0.3)",
+        } }, "✓"),
+        h("h2", { style: Object.assign({}, S.title, { fontSize: "30px" }) }, "All Done!"),
+        h("p", { style: S.sub }, photos.length + " photos for " + config.trialNumber +
+          (skippedPlots.length > 0 ? " (" + skippedPlots.length + " skipped)" : "")),
+        noteCount > 0 ? h("p", { style: { fontSize: "14px", color: "#fbbf24", marginTop: "-20px" } }, "📝 " + noteCount + " notes") : null,
+        folderHandle ? h("p", { style: { fontSize: "14px", color: "#4ade80", marginTop: "-12px" } }, "📁 Saved to " + folderHandle.name) : null
+      ),
+      h("div", { style: S.card },
+        h("button", { style: S.btnP, onClick: resetApp }, "Start New Session"),
+        folderHandle ? h("p", { style: { fontSize: "12px", color: "rgba(255,255,255,0.3)", textAlign: "center", marginTop: "12px", marginBottom: 0 } },
+          "Save folder remembered for next session") : null
+      )
+    );
+  }
+
+  return null;
+}
+
+ReactDOM.render(
+  React.createElement(PhotoBoothApp),
+  document.getElementById("root")
+);
+</script>
+</body>
+</html>
